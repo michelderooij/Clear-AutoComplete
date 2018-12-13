@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 	
-    Version 1.0, June 17th, 2014
+    Version 1.01, December 13th, 2018
     
     .DESCRIPTION
     This script allows you to clear one or more locations where recipient information 
@@ -29,9 +29,11 @@
     Revision History
     --------------------------------------------------------------------------------
     1.0     Initial release
+    1.01    Added X-AnchorMailbox usage for impersonation
+            Renamed parameter Mailbox to Identity
     
-    .PARAMETER Mailbox
-    Name of the Mailbox to process
+    .PARAMETER Identity
+    Identity of the Mailbox to process
 
     .PARAMETER Server
     Exchange Client Access Server to use for Exchange Web Services. When ommited, script will attempt to 
@@ -65,7 +67,7 @@
 
     .EXAMPLE
     $Credentials= Get-Credential
-    Clear-AutoComplete.ps1 -Mailbox olrik@office365tenant.com -Credentials $Credentials 
+    Clear-AutoComplete.ps1 -Identity olrik@office365tenant.com -Credentials $Credentials 
  
     Get credentials and removes Auto Complete information from olrik@office365tenant.com's mailbox.
 
@@ -81,14 +83,14 @@
     )]
 param(
 	[parameter( Position=0, Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
-		[string]$Mailbox,
+	[string]$Identity,
 	[parameter( Mandatory=$false)]
-		[string]$Server,
+	[string]$Server,
 	[parameter( Mandatory=$false)]
         [switch]$Impersonation,
-    [parameter( Mandatory= $false)] 
+        [parameter( Mandatory= $false)] 
         [System.Management.Automation.PsCredential]$Credentials,
-    [parameter( Mandatory= $false)]
+        [parameter( Mandatory= $false)]
         [ValidateSet("Outlook", "OWA", "SuggestedContacts", "RecipientCache", "All")]
         [array]$Type= @("Outlook","OWA")
     )
@@ -101,15 +103,15 @@ process {
     $ERR_AUTODISCOVERFAILED                  = 1003
     $ERR_CANTACCESSMAILBOXSTORE              = 1004
     
-    Function Get-EmailAddress( $Mailbox) {
-        $address= [regex]::Match([string]$Mailbox, ".*@.*\..*", "IgnoreCase")
+    Function Get-EmailAddress( $Identity) {
+        $address= [regex]::Match([string]$Identity, ".*@.*\..*", "IgnoreCase")
         if( $address.Success ) {
             return $address.value.ToString()
         }
         Else {
-            # Use local AD to look up e-mail address using $Mailbox as SamAccountName
+            # Use local AD to look up e-mail address using $Identity as SamAccountName
             $ADSearch= New-Object DirectoryServices.DirectorySearcher( [ADSI]"")
-            $ADSearch.Filter= "(|(cn=$Mailbox)(samAccountName=$Mailbox)(mail=$Mailbox))"
+            $ADSearch.Filter= "(|(cn=$Identity)(samAccountName=$Identity)(mail=$Identity))"
             $Result= $ADSearch.FindOne()
             If( $Result) {
                 $objUser= $Result.getDirectoryEntry()
@@ -268,18 +270,18 @@ process {
 
     Load-EWSManagedAPIDLL
 
-    If( $Mailbox -is [array]) {
+    If( $Identity -is [array]) {
         # When multiple mailboxes are specified, call script for each mailbox
-        [Void]$PSBoundParameters.Remove("Mailbox")
-        $Mailbox | ForEach-Object { Remove-MessageClassItems -Mailbox $_ @PSBoundParameters }
+        [Void]$PSBoundParameters.Remove("Identity")
+        $Identity | ForEach-Object { Remove-MessageClassItems -Identity $_ @PSBoundParameters }
     }
     else {
-        $EmailAddress= get-EmailAddress $Mailbox
+        $EmailAddress= get-EmailAddress $Identity
         If( !$EmailAddress) {
-            Write-Error "Specified mailbox $Mailbox not found"
+            Write-Error "Specified mailbox $Identity not found"
             Exit $ERR_MAILBOXNOTFOUND
         }
-        Write-Host "Processing mailbox $Mailbox ($EmailAddress)"
+        Write-Host "Processing mailbox $Identity ($EmailAddress)"
 
         set-TrustAllWeb
 
