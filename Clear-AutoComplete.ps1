@@ -302,8 +302,9 @@ process {
         }
 
         If( $Impersonation) {
-            Write-Verbose "Using $EmailAddress for impersonation"
-            $EwsService.ImpersonatedUserId= New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $EmailAddress)
+            Write-Verbose ('Using {0} for impersonation' -f $EmailAddress)
+            $EwsService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $EmailAddress)
+            $EwsService.HttpHeaders.Add("X-AnchorMailbox", $EmailAddress)
         }
         
         If ($Server) {
