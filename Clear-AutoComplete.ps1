@@ -8,13 +8,16 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 	
-    Version 1.1, September 17th, 2019
+    Version 1.2, September 17th, 2019
     
     .DESCRIPTION
     This script allows you to clear one or more locations where recipient information 
     is cached, as this could influence end user experience with certain migration scenarios.
     You have the option to clear the AutoComplete stream (Name Cache) for Outlook and 
     OWA, the Suggested Contacts or the Recipient Cache (Exchange 2013 only).
+    Note that Outlook in cached mode will cache the AutoComplete stream as well (in the OST).
+    Option then is to run Outlook with the /cleanautocompletecache switch, or clear and 
+    let Outlook recreate the OST.
 	
     .LINK
     http://eightwone.com
@@ -31,7 +34,8 @@
     1.0     Initial release
     1.01    Added X-AnchorMailbox usage for impersonation
             Renamed parameter Mailbox to Identity
-    1.1     Reverified and updated to fix minor issues
+    1.1     Bug fix in clearing Suggested Contacts and RecipientCache
+    1.2     Reverified and updated to fix minor issues
             Changed deletes to HardDelete
     
     .PARAMETER Identity
@@ -104,6 +108,7 @@ process {
     $ERR_MAILBOXNOTFOUND                     = 1002
     $ERR_AUTODISCOVERFAILED                  = 1003
     $ERR_CANTACCESSMAILBOXSTORE              = 1004
+    $ERR_PROCESSINGMAILBOX                   = 1005
     
     Function Get-EmailAddress( $Identity) {
         $address= [regex]::Match([string]$Identity, ".*@.*\..*", "IgnoreCase")
