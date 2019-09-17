@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 	
-    Version 1.01, December 13th, 2018
+    Version 1.1, September 17th, 2019
     
     .DESCRIPTION
     This script allows you to clear one or more locations where recipient information 
@@ -31,6 +31,8 @@
     1.0     Initial release
     1.01    Added X-AnchorMailbox usage for impersonation
             Renamed parameter Mailbox to Identity
+    1.1     Reverified and updated to fix minor issues
+            Changed deletes to HardDelete
     
     .PARAMETER Identity
     Identity of the Mailbox to process
@@ -187,8 +189,9 @@ process {
         [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll  
     }
 
-    Function Clear-AutoCompleteStream( $EwsService) {
-        $InboxFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::Inbox )
+    Function Clear-AutoCompleteStream( $EwsService, $EmailAddress) {
+        $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::Inbox, $EmailAddress)  
+        $InboxFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, $FolderId)
         $ItemSearchFilterCollection= New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo( [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass, "IPM.Configuration.AutoComplete")
         $ItemView= New-Object Microsoft.Exchange.WebServices.Data.ItemView( 1)
         $ItemView.PropertySet= New-Object Microsoft.Exchange.WebServices.Data.PropertySet( [Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly)
@@ -210,10 +213,10 @@ process {
         }
     }
 
-    Function Clear-OWAAutoComplete( $EwsService) {
+    Function Clear-OWAAutoComplete( $EwsService, $EmailAddress) {
         Try { 
-            $UserConfig = [Microsoft.Exchange.WebServices.Data.UserConfiguration]::Bind($EwsService, "OWA.AutocompleteCache", 
-                [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::Root, [Microsoft.Exchange.WebServices.Data.UserConfigurationProperties]::All)
+            $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Root, $EmailAddress)  
+            $UserConfig = [Microsoft.Exchange.WebServices.Data.UserConfiguration]::Bind($EwsService, "OWA.AutocompleteCache", $FolderId, [Microsoft.Exchange.WebServices.Data.UserConfigurationProperties]::All)
         }
         Catch {
             Write-Verbose "No OWA AutoComplete item found."
@@ -229,8 +232,9 @@ process {
         }
     }
 
-    Function Clear-SuggestedContacts( $EwsService) {
-        $MsgFolderRootFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::MsgFolderRoot)
+    Function Clear-SuggestedContacts( $EwsService, $EmailAddress) {
+        $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::MsgFolderRoot, $EmailAddress)  
+        $MsgFolderRootFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, $FolderId)
         $FolderView= New-Object Microsoft.Exchange.WebServices.Data.FolderView( 1)
         $FolderView.Traversal= [Microsoft.Exchange.WebServices.Data.FolderTraversal]::Shallow
         $FolderSearchFilter= New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo( [Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, "Suggested Contacts")
@@ -238,7 +242,7 @@ process {
         If( $FolderSearchResults.Count -gt 0) {
             ForEach( $Folder in $FolderSearchResults) {
                 Try {
-                    $Folder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete)
+                    $Folder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
                 }
                 Catch {
                     Write-Error "Problem removing 'Suggested Contacts' folder: " $error[0]
@@ -246,19 +250,20 @@ process {
             }
         }
         Else {
-            Write-Verbose "No 'Suggested Contacts' folder found."
+            Write-Verbose "No Suggested Contacts folder found."
         }        
     }
 
-    Function Clear-RecipientCache( $EwsService) {
+    Function Clear-RecipientCache( $EwsService, $EmailAddress) {
         Try {
-            $RecipientCacheFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::RecipientCache)
+            $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::RecipientCache, $EmailAddress)  
+            $RecipientCacheFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, $FolderId)
         }
         Catch {
             Write-Verbose "No RecipientCache folder found."
         }
         If( $RecipientCacheFolder) {
-            $RecipientCacheFolder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete)
+            $RecipientCacheFolder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
         }
     }
         
@@ -338,19 +343,19 @@ process {
         }
 
         If( $Type -contains "All" -or $Type -contains "Outlook") {
-            Clear-AutoCompleteStream $EwsService
+            Clear-AutoCompleteStream $EwsService $EmailAddress
         }
 
         If( $Type -contains "All" -or $Type -contains "OWA") {
-            Clear-OWAAutoComplete $EwsService
+            Clear-OWAAutoComplete $EwsService $EmailAddress
         }
 
         If( $Type -contains "All" -or $Type -contains "SuggestedContacts") {
-            Clear-SuggestedContacts $EwsService
+            Clear-SuggestedContacts $EwsService $EmailAddress
         }
 
         If( $Type -contains "All" -or $Type -contains "RecipientCache") {
-            Clear-RecipientCache $EwsService
+            Clear-RecipientCache $EwsService $EmailAddress
         }
     }   
 }   
