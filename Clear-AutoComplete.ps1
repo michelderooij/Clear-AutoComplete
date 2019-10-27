@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 	
-    Version 1.2, September 17th, 2019
+    Version 1.21, October 27th, 2019
     
     .DESCRIPTION
     This script allows you to clear one or more locations where recipient information 
@@ -37,6 +37,8 @@
     1.1     Bug fix in clearing Suggested Contacts and RecipientCache
     1.2     Reverified and updated to fix minor issues
             Changed deletes to HardDelete
+    1.21    Added WhatIf/Confirm support
+            Added success operations to Verbose output
     
     .PARAMETER Identity
     Identity of the Mailbox to process
@@ -93,13 +95,13 @@ param(
 	[parameter( Mandatory=$false)]
 	[string]$Server,
 	[parameter( Mandatory=$false)]
-        [switch]$Impersonation,
-        [parameter( Mandatory= $false)] 
-        [System.Management.Automation.PsCredential]$Credentials,
-        [parameter( Mandatory= $false)]
-        [ValidateSet("Outlook", "OWA", "SuggestedContacts", "RecipientCache", "All")]
-        [array]$Type= @("Outlook","OWA")
-    )
+    [switch]$Impersonation,
+    [parameter( Mandatory= $false)] 
+    [System.Management.Automation.PsCredential]$Credentials,
+    [parameter( Mandatory= $false)]
+    [ValidateSet("Outlook", "OWA", "SuggestedContacts", "RecipientCache", "All")]
+    [array]$Type= @("Outlook","OWA")
+)
 
 process {
     # Errors
@@ -204,9 +206,11 @@ process {
         $ItemSearchResults= $InboxFolder.FindItems( $ItemSearchFilterCollection, $ItemView)
         If( $ItemSearchResults.Items.Count -gt 0) {
             ForEach( $Item in $ItemSearchResults.Items) {
-                Write-Debug "Removing item $($Item.Id)"
                 try {
-                    $res= $Item.Delete( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                    If ($pscmdlet.ShouldProcess( 'AutoComplete Stream', 'Clear')) {
+                        $res= $Item.Delete( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                    }
+                    Write-Verbose "Cleared AutoComplete Stream"
                 }
                 catch {
                     Write-Warning "Problem removing Autocomplete Stream item: " $error[0]
@@ -228,8 +232,11 @@ process {
         }
         If( $UserConfig) {
             Try {
-                $UserConfig.Delete()
-                $UserConfig.Update()            
+                If ($pscmdlet.ShouldProcess( 'OWA AutoComplete', 'Clear')) {
+                    $UserConfig.Delete()
+                    $UserConfig.Update()      
+                }
+                Write-Verbose 'Cleared OWA AutoComplete'
             }
             Catch {
                 Write-Warning "Problem removing OWA Autocomplete Stream item: " $error[0]
@@ -247,7 +254,10 @@ process {
         If( $FolderSearchResults.Count -gt 0) {
             ForEach( $Folder in $FolderSearchResults) {
                 Try {
-                    $Folder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                    If ($pscmdlet.ShouldProcess( 'SuggestedContacts', 'Clear')) {
+                        $Folder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                    }
+                    Write-Verbose "Cleared SuggestedContacts"
                 }
                 Catch {
                     Write-Error "Problem removing 'Suggested Contacts' folder: " $error[0]
@@ -268,7 +278,10 @@ process {
             Write-Verbose "No RecipientCache folder found."
         }
         If( $RecipientCacheFolder) {
-            $RecipientCacheFolder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+            If ($pscmdlet.ShouldProcess( 'RecipientCache', 'Clear')) {
+                $RecipientCacheFolder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+            }
+            Write-Verbose "Cleared RecipientCache"
         }
     }
         
