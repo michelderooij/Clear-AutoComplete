@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 	
-    Version 1.21, October 27th, 2019
+    Version 1.3, November 15th, 2019
     
     .DESCRIPTION
     This script allows you to clear one or more locations where recipient information 
@@ -26,9 +26,6 @@
     Requires Microsoft Exchange Web Services (EWS) Managed API 1.2 or up
     and Exchange 2010 or up or Exchange Online.
 
-    To do list:
-    - Remove selected entries using pattern matching
-
     Revision History
     --------------------------------------------------------------------------------
     1.0     Initial release
@@ -39,6 +36,8 @@
             Changed deletes to HardDelete
     1.21    Added WhatIf/Confirm support
             Added success operations to Verbose output
+    1.3     Added Pattern parameter
+            Code rewrite
     
     .PARAMETER Identity
     Identity of the Mailbox to process
@@ -68,6 +67,12 @@
 
     Default is Outlook,OWA
 
+    .PARAMETER Pattern
+    Specifies one or more patterns of the entries to remove from OWA, SuggestedContacts or RecipientCache. Does
+    not work with Autocomplete stream (will only remove all entries). Patterns accept wildcards, e.g. to remove 
+    all entries from the domain name contoso.com, use *@contoso.com. You can also use DN patterns, such 
+    as '/o=ExchangeLabs/*'.
+
     .EXAMPLE
     Clear-AutoComplete.ps1 -Mailbox User1 -Type All -Verbose
 
@@ -85,22 +90,21 @@
     Uses a CSV file to removes AutoComplete information for a set of mailboxes, using impersonation.
 #>
 
-[cmdletbinding(
-    SupportsShouldProcess=$true,
-    ConfirmImpact="High"
-    )]
+[cmdletbinding(SupportsShouldProcess=$true,ConfirmImpact="High")]
 param(
-	[parameter( Position=0, Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
-	[string]$Identity,
-	[parameter( Mandatory=$false)]
-	[string]$Server,
-	[parameter( Mandatory=$false)]
+    [parameter( Position=0, Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
+    [string]$Identity,
+    [parameter( Mandatory=$false)]
+    [string]$Server,
+    [parameter( Mandatory=$false)]
     [switch]$Impersonation,
     [parameter( Mandatory= $false)] 
     [System.Management.Automation.PsCredential]$Credentials,
     [parameter( Mandatory= $false)]
     [ValidateSet("Outlook", "OWA", "SuggestedContacts", "RecipientCache", "All")]
-    [array]$Type= @("Outlook","OWA")
+    [array]$Type= @("Outlook","OWA"),
+    [parameter( Mandatory= $false)]
+    [string[]]$Pattern
 )
 
 process {
@@ -133,37 +137,37 @@ process {
     }
 
     Function Load-EWSManagedAPIDLL {
-        $EWSDLL= "Microsoft.Exchange.WebServices.dll"
-        If( Test-Path "$pwd\$EWSDLL") {
-            $EWSDLLPath= "$pwd"
+        $EWSDLL= 'Microsoft.Exchange.WebServices.dll'
+        If( Test-Path (Join-Path $pwd $EWSDLL)) {
+            $EWSDLLPath= $pwd
         }
         Else {
             $EWSDLLPath = (($(Get-ItemProperty -ErrorAction SilentlyContinue -Path Registry::$(Get-ChildItem -ErrorAction SilentlyContinue -Path 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Exchange\Web Services'|Sort-Object Name -Descending| Select-Object -First 1 -ExpandProperty Name)).'Install Directory'))
-            if (!( Test-Path "$EWSDLLPath\$EWSDLL")) {
-                Write-Error "This script requires EWS Managed API 1.2 installed or the DLL in the current folder."
-                Write-Error "You can download and install EWS Managed API from http://go.microsoft.com/fwlink/?LinkId=255472"
+            if (!( Test-Path (Join-Path $EWSDLLPath $EWSDLL))) {
+                Write-Error 'This script requires EWS Managed API 1.2 installed or the DLL in the current folder.'
+                Write-Error 'You can download and install EWS Managed API from http://go.microsoft.com/fwlink/?LinkId=255472'
                 Exit $ERR_EWSDLLNOTFOUND
             }
         }
-        Write-Verbose "Loading $EWSDLLPath\$EWSDLL"
+        Write-Verbose ('Loading {0}' -f (Join-Path $EWSDLLPath $EWSDLL))
         try {
             # EX2010
             If(!( Get-Module Microsoft.Exchange.WebServices)) {
-                Import-Module "$EWSDLLPATH\$EWSDLL"
+                Import-Module (Join-Path $EWSDLLPATH $EWSDLL)
             }
         }
         catch {
             #<= EX2010
-            [void][Reflection.Assembly]::LoadFile( "$EWSDLLPath\$EWSDLL")
+            [void][Reflection.Assembly]::LoadFile( (Join-Path $EWSDLLPath $EWSDLL))
         }
         try {
             $Temp= [Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2007_SP1
         }
         catch {
-            Write-Error "Problem loading $EWSDLL"
+            Write-Error ('Problem loading {0}' -f $EWSDLL)
             Exit $ERR_EWSLOADING
         }
-        Write-Verbose "Loaded Microsoft.Exchange.WebServices v$((Get-Module Microsoft.Exchange.WebServices).Version)"
+        Write-Verbose ('Loaded Microsoft.Exchange.WebServices v{0}' -f (Get-Module Microsoft.Exchange.WebServices).Version)
     }
         
     # After calling this any SSL Warning issues caused by Self Signed Certificates will be ignored
@@ -196,7 +200,8 @@ process {
         [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll  
     }
 
-    Function Clear-AutoCompleteStream( $EwsService, $EmailAddress) {
+    Function Clear-AutoCompleteStream( $EwsService, $EmailAddress, $Pattern) {
+        Write-Host ('Processing AutoComplete stream for {0}' -f $EmailAddress)
         $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::Inbox, $EmailAddress)  
         $InboxFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, $FolderId)
         $ItemSearchFilterCollection= New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo( [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass, "IPM.Configuration.AutoComplete")
@@ -206,82 +211,178 @@ process {
         $ItemSearchResults= $InboxFolder.FindItems( $ItemSearchFilterCollection, $ItemView)
         If( $ItemSearchResults.Items.Count -gt 0) {
             ForEach( $Item in $ItemSearchResults.Items) {
-                try {
-                    If ($pscmdlet.ShouldProcess( 'AutoComplete Stream', 'Clear')) {
-                        $res= $Item.Delete( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
-                    }
-                    Write-Verbose "Cleared AutoComplete Stream"
-                }
-                catch {
-                    Write-Warning "Problem removing Autocomplete Stream item: " $error[0]
+                If ($pscmdlet.ShouldProcess( 'AutoComplete Stream', 'Clear')) {
+                    $res= $Item.Delete( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                    Write-Host 'Cleared AutoComplete stream' -Foreground Green
                 }
             }
         }
         Else {
-            Write-Verbose "No AutoComplete Stream item found."
+            Write-Host 'No AutoComplete Stream item found'
         }
     }
 
-    Function Clear-OWAAutoComplete( $EwsService, $EmailAddress) {
+    Function Clear-OWAAutoComplete( $EwsService, $EmailAddress, $Pattern) {
+        Write-Host ('Processing OWA AutoComplete for {0}' -f $EmailAddress)
         Try { 
             $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Root, $EmailAddress)  
             $UserConfig = [Microsoft.Exchange.WebServices.Data.UserConfiguration]::Bind($EwsService, "OWA.AutocompleteCache", $FolderId, [Microsoft.Exchange.WebServices.Data.UserConfigurationProperties]::All)
         }
         Catch {
-            Write-Verbose "No OWA AutoComplete item found."
+            Write-Host 'No OWA AutoComplete item found'
+            $UserConfig= $false
         }
         If( $UserConfig) {
-            Try {
-                If ($pscmdlet.ShouldProcess( 'OWA AutoComplete', 'Clear')) {
-                    $UserConfig.Delete()
-                    $UserConfig.Update()      
+            If ($pscmdlet.ShouldProcess( 'OWA AutoComplete', 'Clear')) {
+
+                If( $Pattern) {
+                    $xmlDoc = New-Object System.Xml.XmlDocument
+                    $xmlData = [System.Text.Encoding]::UTF8.GetString( $UserConfig.XmlData).Substring(1)
+                    If( $xmlData) {
+                        $xmlDoc.loadXml( $xmlData)
+                        $nodes= $xmlDoc.SelectNodes("/AutoCompleteCache/entry")
+                        ForEach( $node in $nodes) {
+                            Write-Verbose ('Evaluating {0}' -f $node.smtpAddr)
+                            $IsMatch= $false
+                            ForEach( $ThisPattern in $Pattern) {
+                                $IsMatch= $IsMatch -or ($node.smtpAddr -like $ThisPattern)
+                            }
+                            If( $IsMatch) {
+                                Write-Host ('Removing {0}' -f $node.smtpAddr) -Foreground Green
+                                $node.parentNode.removeChild( $node) | Out-Null
+                            }
+                            Else {
+                                Write-Verbose ('Skipping {0}' -f $node.smtpAddr)
+                           }
+                        }
+                        $newXmlData= [System.Text.Encoding]::UTF8.GetBytes( [System.Text.Encoding]::UTF8.GetString( $UserConfig.XmlData).Substring(0,1) + $XmlDoc.OuterXml)
+                        $UserConfig.XmlData= $NewXmlData
+                        Try {
+                            $UserConfig.Update()      
+                            Write-Verbose 'Updated OWA AutoComplete'
+                        }
+                        Catch {
+                            Write-Error ('Problem updating OWA Autocomplete: {0}' -f $error[0])
+                        }
+                    }
+                    Else {
+                        Write-Warning ('Problem retrieving UserConfiguration')
+                    }
                 }
-                Write-Verbose 'Cleared OWA AutoComplete'
-            }
-            Catch {
-                Write-Warning "Problem removing OWA Autocomplete Stream item: " $error[0]
+                Else {
+                    # Zap all
+                    Try {
+                        $UserConfig.Delete()
+                        $UserConfig.Update()      
+                        Write-Verbose 'Cleared OWA AutoComplete'
+                    }
+                    Catch {
+                        Write-Error ('Problem removing OWA Autocomplete Stream item: {0}' -f $error[0])
+                    }
+                }
             }
         }
     }
 
-    Function Clear-SuggestedContacts( $EwsService, $EmailAddress) {
+    Function Clear-SuggestedContacts( $EwsService, $EmailAddress, $Pattern) {
+        Write-Host ('Processing SuggestedContacts for {0}' -f $EmailAddress)
         $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::MsgFolderRoot, $EmailAddress)  
-        $MsgFolderRootFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, $FolderId)
         $FolderView= New-Object Microsoft.Exchange.WebServices.Data.FolderView( 1)
         $FolderView.Traversal= [Microsoft.Exchange.WebServices.Data.FolderTraversal]::Shallow
-        $FolderSearchFilter= New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo( [Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, "Suggested Contacts")
-        $FolderSearchResults= $EwsService.FindFolders( $MsgFolderRootFolder.Id, $FolderSearchFilter, $FolderView)
+        $FolderSearchFilter= New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo( [Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, 'Suggested Contacts')
+        $FolderSearchResults= $EwsService.FindFolders( $FolderId, $FolderSearchFilter, $FolderView)
         If( $FolderSearchResults.Count -gt 0) {
             ForEach( $Folder in $FolderSearchResults) {
-                Try {
-                    If ($pscmdlet.ShouldProcess( 'SuggestedContacts', 'Clear')) {
-                        $Folder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                If ($pscmdlet.ShouldProcess( 'SuggestedContacts', 'Clear')) {
+                    If( $Pattern) {
+                        $ItemView= New-Object Microsoft.Exchange.WebServices.Data.FolderView( 1000)
+                        $Items = $EwsService.FindItems( $Folder.Id, $ItemView)
+                        If( $Items) {
+                            ForEach( $Item in $Items.Items) {
+                                $IsMatch= $false
+                                ForEach( $ThisPattern in $Pattern) {
+                                    $IsMatch= $IsMatch -or ($Item.EmailAddress1 -like $ThisPattern)
+                                }
+                                If( $IsMatch) {
+                                    Try {
+                                        $Item.delete("HardDelete")
+                                        Write-Host ('Removing {0}' -f $Item.EmailAddress1) -Foreground Green
+                                     }
+                                     Catch {
+                                         Write-Error ('Problem removing item {0} from SuggestedContacts folder: {0}' -f $Item.EmailAddress1, $error[0])
+                                     }
+                                }
+                                Else {
+                                    Write-Verbose ('Skipping {0}' -f $Item.EmailAddress1)
+                                }
+                            }
+                        }
+                        Else {
+                            Write-Host 'No entries found in SuggestedContacts'
+                        }
                     }
-                    Write-Verbose "Cleared SuggestedContacts"
-                }
-                Catch {
-                    Write-Error "Problem removing 'Suggested Contacts' folder: " $error[0]
+                    Else {
+                        # Zap all
+                        Try {
+                            $Folder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                            Write-Verbose "Cleared 'Suggested Contacts'"
+                        }
+                        Catch {
+                            Write-Error ('Problem removing SuggestedContacts folder: {0}' -f $error[0])
+                        }
+                    }
                 }
             }
         }
         Else {
-            Write-Verbose "No Suggested Contacts folder found."
+            Write-Host 'No Suggested Contacts folder found'
         }        
     }
 
-    Function Clear-RecipientCache( $EwsService, $EmailAddress) {
+    Function Clear-RecipientCache( $EwsService, $EmailAddress, $Pattern) {
+        Write-Host ('Processing RecipientCache for {0}' -f $EmailAddress)
         Try {
             $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::RecipientCache, $EmailAddress)  
             $RecipientCacheFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, $FolderId)
         }
         Catch {
-            Write-Verbose "No RecipientCache folder found."
+            Write-Host 'No RecipientCache folder found'
         }
         If( $RecipientCacheFolder) {
             If ($pscmdlet.ShouldProcess( 'RecipientCache', 'Clear')) {
-                $RecipientCacheFolder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                If( $Pattern) {
+                    $ItemView= New-Object Microsoft.Exchange.WebServices.Data.FolderView( 1000)
+                    $Items = $EwsService.FindItems( $RecipientCacheFolder.Id, $ItemView)
+                    If( $Items) {
+                        ForEach( $Item in $Items.Items) {
+                            $IsMatch= $false
+                            ForEach( $ThisPattern in $Pattern) {
+                                $IsMatch= $IsMatch -or ($Item.EmailAddress1 -like $ThisPattern)
+                            }
+                            If( $IsMatch) {
+                                Write-Host ('Removing {0}' -f $Item.EmailAddress1) -Foreground Green
+                                $Item.delete("HardDelete")
+                            }
+                            Else {
+                                Write-Verbose ('Skipping {0}' -f $Item.EmailAddress1)
+                            }
+                        }
+                    }
+                    Else {
+                        Write-Host 'No entries found in RecipientCache'
+                    }
+                }
+                Else {
+                    # Zap All
+                    Try {
+                        $RecipientCacheFolder.Empty( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                        Write-Verbose "Cleared RecipientCache"
+                    }
+                    Catch {
+                        Write-Error ('Problem removing RecipientCache folder: {0}' -f $error[0])
+                    }
+                }
             }
-            Write-Verbose "Cleared RecipientCache"
         }
     }
         
@@ -292,21 +393,32 @@ process {
     #Requires -Version 2.0
 
     Load-EWSManagedAPIDLL
+    set-TrustAllWeb
 
-    If( $Identity -is [array]) {
-        # When multiple mailboxes are specified, call script for each mailbox
-        [Void]$PSBoundParameters.Remove("Identity")
-        $Identity | ForEach-Object { Remove-MessageClassItems -Identity $_ @PSBoundParameters }
+    If( $Pattern) {
+        Try {
+            ForEach( $ThisPattern in $Pattern) {
+                $res= 'test' -like $Pattern
+            }
+            Write-Verbose ('Pattern(s) specified: {0}' -f ($Pattern -join ','))
+        }
+        Catch {
+            Throw( 'Provided pattern does not seem to be a valid expression')
+        }
     }
-    else {
-        $EmailAddress= get-EmailAddress $Identity
+    Else {
+        # Not specified, so zap 'em all
+    }
+
+    ForEach( $ThisIdentity in $Identity) {
+
+        $EmailAddress= get-EmailAddress $ThisIdentity
+
         If( !$EmailAddress) {
-            Write-Error "Specified mailbox $Identity not found"
+            Write-Error ('Specified mailbox {0} not found' -f $ThisIdentity)
             Exit $ERR_MAILBOXNOTFOUND
         }
-        Write-Host "Processing mailbox $Identity ($EmailAddress)"
-
-        set-TrustAllWeb
+        Write-Host ('Processing mailbox {0}' -f $EmailAddress)
 
         $ExchangeVersion= [Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP1
         $EwsService= New-Object Microsoft.Exchange.WebServices.Data.ExchangeService( $ExchangeVersion)
@@ -314,11 +426,11 @@ process {
 
         If( $Credentials) {
             try {
-                Write-Verbose "Using credentials $($Credentials.UserName)"
+                Write-Verbose ('Using credentials {0}' -f $Credentials.UserName)
                 $EwsService.Credentials= New-Object System.Net.NetworkCredential( $Credentials.UserName, [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR( $Credentials.Password )))
             }
             catch {
-                Write-Error "Invalid credentials provided " $error[0]
+                Write-Error ('Invalid credentials provided {0}' -f $error[0])
                 Exit $ERR_INVALIDCREDENTIALS
             }
         }
@@ -333,47 +445,47 @@ process {
         }
         
         If ($Server) {
-            $EwsUrl= "https://$Server/EWS/Exchange.asmx"
-            Write-Verbose "Using Exchange Web Services URL $EwsUrl"
-            $EwsService.Url= "$EwsUrl"
+            $EwsUrl= 'https://{0}/EWS/Exchange.asmx' -f $Server
+            Write-Verbose ('Using Exchange Web Services URL {0}' -f $EwsUrl)
+            $EwsService.Url= $EwsUrl
         }
         Else {
-            Write-Verbose "Looking up EWS URL using Autodiscover for $EmailAddress"
+            Write-Verbose ('Looking up EWS URL using Autodiscover for {0}' -f $EmailAddress)
             try {
                 # Set script to terminate on all errors (autodiscover failure isn't) to make try/catch work
-                $ErrorActionPreference= "Stop"
+                $ErrorActionPreference= 'Stop'
                 $EwsService.autodiscoverUrl( $EmailAddress, {$true})
             }
             catch {
-                Write-Error "Autodiscover failed: " $error[0]
+                Write-Error ('Autodiscover failed: {0}' -f $error[0])
                 Exit $ERR_AUTODISCOVERFAILED
             }
-            $ErrorActionPreference= "Continue"
-            Write-Verbose "Using EWS on CAS $($EwsService.Url)"
+            $ErrorActionPreference= 'Continue'
+            Write-Verbose 'Using EWS on CAS {0}' -f $EwsService.Url
         } 
         
         try {
             $RootFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::MsgFolderRoot)
         }
         catch {
-            Write-Error "Can't access mailbox information store"
+            Write-Error ('Can''t access mailbox information store')
             Exit $ERR_CANTACCESSMAILBOXSTORE
         }
 
-        If( $Type -contains "All" -or $Type -contains "Outlook") {
-            Clear-AutoCompleteStream $EwsService $EmailAddress
+        If( $Type -contains 'All' -or $Type -contains 'Outlook') {
+            Clear-AutoCompleteStream $EwsService $EmailAddress $Pattern
         }
 
-        If( $Type -contains "All" -or $Type -contains "OWA") {
-            Clear-OWAAutoComplete $EwsService $EmailAddress
+        If( $Type -contains 'All' -or $Type -contains 'OWA') {
+            Clear-OWAAutoComplete $EwsService $EmailAddress $Pattern
         }
 
-        If( $Type -contains "All" -or $Type -contains "SuggestedContacts") {
-            Clear-SuggestedContacts $EwsService $EmailAddress
+        If( $Type -contains 'All' -or $Type -contains 'SuggestedContacts') {
+            Clear-SuggestedContacts $EwsService $EmailAddress $Pattern
         }
 
-        If( $Type -contains "All" -or $Type -contains "RecipientCache") {
-            Clear-RecipientCache $EwsService $EmailAddress
+        If( $Type -contains 'All' -or $Type -contains 'RecipientCache') {
+            Clear-RecipientCache $EwsService $EmailAddress $Pattern
         }
-    }   
-}   
+    }
+}
