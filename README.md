@@ -18,7 +18,7 @@ Removes all autocomplete information for mailbox User1.
 
 ```
 $Credentials= Get-Credential
-Clear-AutoComplete.ps1 -Mailbox olrik@office365tenant.com -Credentials $Credentials 
+Clear-AutoComplete.ps1 -Identity olrik@office365tenant.com -Credentials $Credentials 
 ```
 
 Get credentials and removes Auto Complete information from olrik@office365tenant.com's mailbox.
