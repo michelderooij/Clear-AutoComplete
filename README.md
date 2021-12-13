@@ -12,13 +12,13 @@ Script requires Microsoft Exchange Web Services (EWS) Managed API 1.2 or up, and
 ## Usage
 
 ```
-Clear-AutoComplete.ps1 -Mailbox User1 -Type All -Verbose
+Clear-AutoComplete.ps1 -Identity User1 -Type All -Verbose
 ```
 Removes all autocomplete information for mailbox User1.
 
 ```
 $Credentials= Get-Credential
-Clear-AutoComplete.ps1 -Mailbox olrik@office365tenant.com -Credentials $Credentials 
+Clear-AutoComplete.ps1 -Identity olrik@office365tenant.com -Credentials $Credentials 
 ```
 
 Get credentials and removes Auto Complete information from olrik@office365tenant.com's mailbox.
