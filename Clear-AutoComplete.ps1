@@ -789,7 +789,6 @@ Process {
         if( $null -ne $RootFolder) {
 
             If( $Type -contains 'All' -or $Type -contains 'Outlook') {
-#                Clear-AutoCompleteStream $EwsService $EmailAddress $Pattern
                 Clear-AutoCompleteStream $EwsService $EmailAddress $Pattern
             }
 
