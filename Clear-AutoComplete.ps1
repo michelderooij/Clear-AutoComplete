@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE 
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 	
-    Version 1.3, November 15th, 2019
+    Version 1.4, August 17th, 2021
     
     .DESCRIPTION
     This script allows you to clear one or more locations where recipient information 
@@ -38,9 +38,13 @@
             Added success operations to Verbose output
     1.3     Added Pattern parameter
             Code rewrite
+    1.4     Added code to support OAuth in addition to Basic Auth
+            Added code to support pattern with AutoComplete
+            Added code to support processing one or more Identity 
+            Added TrustAll parameter
     
     .PARAMETER Identity
-    Identity of the Mailbox to process
+    Identity of the one or more mailboxes to process
 
     .PARAMETER Server
     Exchange Client Access Server to use for Exchange Web Services. When ommited, script will attempt to 
@@ -50,13 +54,6 @@
     Specify credentials to use. When not specified, current credentials are used.
     Credentials can be set using $Credentials= Get-Credential
               
-    .PARAMETER Impersonation
-    When specified, uses impersonation for mailbox access, otherwise current logged on user is used.
-    For details on how to configure impersonation access for Exchange 2010 using RBAC, see this article:
-    http://msdn.microsoft.com/en-us/library/exchange/bb204095(v=exchg.140).aspx
-    For details on how to configure impersonation for Exchange 2007, see KB article:
-    http://msdn.microsoft.com/en-us/library/exchange/bb204095%28v=exchg.80%29.aspx
-
     .PARAMETER Type
     Determines what cached information to clear. Option are:
     - Outlook           : AutoComplete stream (also known as Nickname Cache), which is used by Outlook
@@ -73,6 +70,39 @@
     all entries from the domain name contoso.com, use *@contoso.com. You can also use DN patterns, such 
     as '/o=ExchangeLabs/*'.
 
+    .PARAMETER TenantId
+    Specifies the identity of the Tenant.
+
+    .PARAMETER ClientId
+    Specifies the identity of the application configured in Azure Active Directory.
+
+    .PARAMETER Credentials
+    Specify credentials to use with Basic Authentication. Credentials can be set using $Credentials= Get-Credential
+    This parameter is mutually exclusive with CertificateFile, CertificateThumbprint and Secret. 
+
+    .PARAMETER CertificateThumbprint
+    Specify the thumbprint of the certificate to use with OAuth authentication. The certificate needs
+    to reside in the personal store. When using OAuth, providing TenantId and ClientId is mandatory.
+    This parameter is mutually exclusive with CertificateFile, Credentials and Secret. 
+
+    .PARAMETER CertificateFile
+    Specify the .pfx file containing the certificate to use with OAuth authentication. When a password is required,
+    you will be prompted or you can provide it using CertificatePassword.
+    When using OAuth, providing TenantId and ClientId is mandatory. 
+    This parameter is mutually exclusive with CertificateFile, Credentials and Secret. 
+
+    .PARAMETER CertificatePassword
+    Sets the password to use with the specified .pfx file. The provided password needs to be a secure string, 
+    eg. -CertificatePassword (ConvertToSecureString -String 'P@ssword' -Force -AsPlainText)
+
+    .PARAMETER Secret
+    Specifies the client secret to use with OAuth authentication. The secret needs to be provided as a secure string.
+    When using OAuth, providing TenantId and ClientId is mandatory. 
+    This parameter is mutually exclusive with CertificateFile, Credentials and CertificateThumbprint. 
+
+    .PARAMETER TrustAll
+    Specifies if all certificates should be accepted, including self-signed certificates.
+
     .EXAMPLE
     Clear-AutoComplete.ps1 -Mailbox User1 -Type All -Verbose
 
@@ -87,27 +117,63 @@
     .EXAMPLE
     Import-CSV users.csv1 | Clear-AutoComplete.ps1 -Impersonation
 
-    Uses a CSV file to removes AutoComplete information for a set of mailboxes, using impersonation.
+    Uses a CSV file to removes AutoComplete information for a set of mailboxes, using impersonation. The CSV file should contain a column named Identity containing identities.
 #>
 
-[cmdletbinding(SupportsShouldProcess=$true,ConfirmImpact="High")]
+[cmdletbinding(
+    SupportsShouldProcess= $true,
+    ConfirmImpact= 'High'
+)]
 param(
-    [parameter( Position=0, Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
-    [string]$Identity,
-    [parameter( Mandatory=$false)]
+    [parameter( Position= 0, Mandatory= $true, ValueFromPipelineByPropertyName= $true, ParameterSetName= 'OAuthCertFile')] 
+    [parameter( Position= 0, Mandatory= $true, ValueFromPipelineByPropertyName= $true, ParameterSetName= 'OAuthCertSecret')] 
+    [parameter( Position= 0, Mandatory= $true, ValueFromPipelineByPropertyName= $true, ParameterSetName= 'OAuthCertThumb')] 
+    [parameter( Position= 0, Mandatory= $true, ValueFromPipelineByPropertyName= $true, ParameterSetName= 'BasicAuth')] 
+    [string[]]$Identity,
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertThumb')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertFile')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertSecret')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'BasicAuth')] 
     [string]$Server,
-    [parameter( Mandatory=$false)]
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertThumb')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertFile')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertSecret')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'BasicAuth')] 
     [switch]$Impersonation,
-    [parameter( Mandatory= $false)] 
-    [System.Management.Automation.PsCredential]$Credentials,
-    [parameter( Mandatory= $false)]
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertThumb')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertFile')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertSecret')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'BasicAuth')] 
     [ValidateSet("Outlook", "OWA", "SuggestedContacts", "RecipientCache", "All")]
     [array]$Type= @("Outlook","OWA"),
-    [parameter( Mandatory= $false)]
-    [string[]]$Pattern
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertThumb')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertFile')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertSecret')] 
+    [parameter( Mandatory= $false, ParameterSetName= 'BasicAuth')] 
+    [string[]]$Pattern,
+    [parameter( Mandatory= $true, ParameterSetName= 'BasicAuth')] 
+    [System.Management.Automation.PsCredential]$Credentials,
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertSecret')] 
+    [System.Security.SecureString]$Secret,
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertThumb')] 
+    [String]$CertificateThumbprint,
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertFile')] 
+    [ValidateScript({ Test-Path -Path $_ -PathType Leaf})]
+    [String]$CertificateFile,
+    [parameter( Mandatory= $false, ParameterSetName= 'OAuthCertFile')] 
+    [System.Security.SecureString]$CertificatePassword,
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertThumb')] 
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertFile')] 
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertSecret')] 
+    [string]$TenantId,
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertThumb')] 
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertFile')] 
+    [parameter( Mandatory= $true, ParameterSetName= 'OAuthCertSecret')] 
+    [string]$ClientId
 )
+#Requires -Version 3.0
 
-process {
+Begin {
     # Errors
     $ERR_EWSDLLNOTFOUND                      = 1000
     $ERR_EWSLOADING                          = 1001
@@ -115,6 +181,9 @@ process {
     $ERR_AUTODISCOVERFAILED                  = 1003
     $ERR_CANTACCESSMAILBOXSTORE              = 1004
     $ERR_PROCESSINGMAILBOX                   = 1005
+    $ERR_INVALIDCREDENTIALS= 1007
+    $ERR_PROBLEMIMPORTINGCERT= 1008
+    $ERR_CERTNOTFOUND= 1009
     
     Function Get-EmailAddress( $Identity) {
         $address= [regex]::Match([string]$Identity, ".*@.*\..*", "IgnoreCase")
@@ -136,85 +205,270 @@ process {
         }
     }
 
-    Function Load-EWSManagedAPIDLL {
-        $EWSDLL= 'Microsoft.Exchange.WebServices.dll'
-        If( Test-Path (Join-Path $pwd $EWSDLL)) {
-            $EWSDLLPath= $pwd
+    Function Import-ModuleDLL {
+        param(
+            [string]$Name,
+            [string]$FileName,
+            [string]$Package,
+            [string]$ValidateObjName
+        )
+
+        $AbsoluteFileName= Join-Path -Path $PSScriptRoot -ChildPath $FileName
+        If ( Test-Path $AbsoluteFileName) {
+            # OK
         }
         Else {
-            $EWSDLLPath = (($(Get-ItemProperty -ErrorAction SilentlyContinue -Path Registry::$(Get-ChildItem -ErrorAction SilentlyContinue -Path 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Exchange\Web Services'|Sort-Object Name -Descending| Select-Object -First 1 -ExpandProperty Name)).'Install Directory'))
-            if (!( Test-Path (Join-Path $EWSDLLPath $EWSDLL))) {
-                Write-Error 'This script requires EWS Managed API 1.2 installed or the DLL in the current folder.'
-                Write-Error 'You can download and install EWS Managed API from http://go.microsoft.com/fwlink/?LinkId=255472'
-                Exit $ERR_EWSDLLNOTFOUND
-            }
-        }
-        Write-Verbose ('Loading {0}' -f (Join-Path $EWSDLLPath $EWSDLL))
-        try {
-            # EX2010
-            If(!( Get-Module Microsoft.Exchange.WebServices)) {
-                Import-Module (Join-Path $EWSDLLPATH $EWSDLL)
-            }
-        }
-        catch {
-            #<= EX2010
-            [void][Reflection.Assembly]::LoadFile( (Join-Path $EWSDLLPath $EWSDLL))
-        }
-        try {
-            $Temp= [Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2007_SP1
-        }
-        catch {
-            Write-Error ('Problem loading {0}' -f $EWSDLL)
-            Exit $ERR_EWSLOADING
-        }
-        Write-Verbose ('Loaded Microsoft.Exchange.WebServices v{0}' -f (Get-Module Microsoft.Exchange.WebServices).Version)
-    }
-        
-    # After calling this any SSL Warning issues caused by Self Signed Certificates will be ignored
-    # Source: http://poshcode.org/624
-    Function set-TrustAllWeb() {
-        Write-Verbose "Set to trust all certificates"
-        $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider  
-        $Compiler=$Provider.CreateCompiler()  
-        $Params=New-Object System.CodeDom.Compiler.CompilerParameters  
-        $Params.GenerateExecutable=$False  
-        $Params.GenerateInMemory=$True  
-        $Params.IncludeDebugInformation=$False  
-        $Params.ReferencedAssemblies.Add("System.DLL") | Out-Null  
-  
-        $TASource= @'
-            namespace Local.ToolkitExtensions.Net.CertificatePolicy { 
-                public class TrustAll : System.Net.ICertificatePolicy { 
-                    public TrustAll() {  
+            If( $Package) {
+                If( Get-Command -Name Get-Package -ErrorAction SilentlyContinue) {
+                    If( Get-Package -Name $Package -ErrorAction SilentlyContinue) {
+                        $AbsoluteFileName= (Get-ChildItem -ErrorAction SilentlyContinue -Path (Split-Path -Parent (get-Package -Name $Package | Sort-Object -Property Version -Descending | Select-Object -First 1).Source) -Filter $FileName -Recurse).FullName
                     }
-                    public bool CheckValidationResult(System.Net.ServicePoint sp, System.Security.Cryptography.X509Certificates.X509Certificate cert,   System.Net.WebRequest req, int problem) { 
-                        return true; 
-                    } 
-                } 
+                }
             }
-'@
+        }
 
-        $TAResults=$Provider.CompileAssemblyFromSource($Params, $TASource)  
-        $TAAssembly=$TAResults.CompiledAssembly  
-        $TrustAll=$TAAssembly.CreateInstance("Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll")  
-        [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll  
+        If( $absoluteFileName) {
+            $ModLoaded= Get-Module -Name $Name -ErrorAction SilentlyContinue
+            If( $ModLoaded) {
+                Write-Verbose ('Module {0} v{1} already loaded' -f $ModLoaded.Name, $ModLoaded.Version)
+            }
+            Else {
+                Write-Verbose ('Loading module {0}' -f $absoluteFileName)
+                try {
+                    Import-Module -Name $absoluteFileName -Global -Force
+                    Start-Sleep 1
+                }
+                catch {
+                    Write-Error ('Problem loading module {0}: {1}' -f $Name, $error[0])
+                    Exit $ERR_DLLLOADING
+                }
+                $ModLoaded= Get-Module -Name $Name -ErrorAction SilentlyContinue
+                If( $ModLoaded) {
+                    Write-Verbose ('Module {0} v{1} loaded' -f $ModLoaded.Name, $ModLoaded.Version)
+                }
+                Try {
+                    If( $validateObjName) {
+                        $null= New-Object -TypeName $validateObjName
+                    }
+                }
+                Catch {
+                    Write-Error ('Problem initializing test-object from module {0}: {1}' -f $Name, $_.Exception.Message)
+                    Exit $ERR_DLLLOADING
+                }
+            }
+        }
+        Else {
+            Write-Verbose ('Required module {0} could not be located' -f $FileName)
+            Exit $ERR_DLLNOTFOUND
+        }
+    }
+
+    Function Set-SSLVerification {
+        param(
+            [switch]$Enable,
+            [switch]$Disable
+        )
+
+        Add-Type -TypeDefinition  @"
+            using System.Net.Security;
+            using System.Security.Cryptography.X509Certificates;
+            public static class TrustEverything
+            {
+                private static bool ValidationCallback(object sender, X509Certificate certificate, X509Chain chain,
+                    SslPolicyErrors sslPolicyErrors) { return true; }
+                public static void SetCallback() { System.Net.ServicePointManager.ServerCertificateValidationCallback= ValidationCallback; }
+                public static void UnsetCallback() { System.Net.ServicePointManager.ServerCertificateValidationCallback= null; }
+        }
+"@
+        If($Enable) {
+            Write-Verbose ('Enabling SSL certificate verification')
+            [TrustEverything]::UnsetCallback()
+        }
+        Else {
+            Write-Verbose ('Disabling SSL certificate verification')
+            [TrustEverything]::SetCallback()
+        }
+    }
+
+    Function ConvertAutocompleteStream-ToObject {
+        param(
+            [Byte[]]$AutocompleteStream
+        )
+        $AutoCompleteEntries= [System.Collections.ArrayList]@()
+
+        # First 4 bytes are metadata
+        $MetadataStart= $AutocompleteStream[0..3]
+        # Next 4 bytes are major version
+        $MajorVersion= [System.BitConverter]::ToUint32( $AutocompleteStream, 4)
+        # Next 4 bytes are minor version
+        $MinorVersion= [System.BitConverter]::ToUint32( $AutocompleteStream, 8)
+        # Last 12 bytes are metadata
+        $MetadataEnd= $AutocompleteStream[ ($AutocompleteStream.Length-12) .. ($AutocompleteStream.Length-1)]
+
+        $NumRows= [System.BitConverter]::ToUint32( $AutocompleteStream, 12)
+
+        # Data starts here
+        $i= 16
+
+        For( $row=0; $row -lt $NumRows; $row++) {
+
+            Write-Host ('Row: {0}' -f $row)
+            $NumProps= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+            $i+= 4
+
+            For( $prop=0; $prop -lt $NumProps; $prop++) {
+
+                Write-Host ('Row {0}, Property {1}' -f $row, $prop)
+
+                $PropertyTag= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                $PropertyReserved= [System.BitConverter]::ToUint32( $AutocompleteStream, $i+4)
+                $PropertyValueUnion= [System.BitConverter]::ToUint64( $AutocompleteStream, $i+8)
+                $i+= 16
+
+                Write-Host ('Row {0}, Property {1}, PropertyTag {2}' -f $row, $prop, $PropertyTag)
+
+                Switch( $PropertyTag) {
+
+                    0x101F { #PT_MV_UNICODE
+
+                        #Array of PT_UNICODE
+                        $NumPTUnicode= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                        $i+= 4
+
+                        $PropertyData= [System.Collections.ArrayList]@()
+                        For( $s=0; $s -lt $NumPTUnicode; $s++) {
+                            $len= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                            $i+= 4
+                            $null= $PropertyData.Add( [System.Text.Encoding]::Unicode.GetString( $AutocompleteStream[ ($i) .. ($i+ $len) ]))
+                            $i+= len
+                        }
+
+                    }
+
+                    0x101E { #PT_MV_STRING8
+
+                        #Array of PT_STRING8
+                        $NumPTString= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                        $i+= 4
+
+                        $PropertyData= [System.Collections.ArrayList]@()
+                        For( $s=0; $s -lt $NumPTString; $s++) {
+                            $len= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                            $i+= 4
+                            $null= $PropertyData.Add( [System.Text.Encoding]::ASCII.GetString( $AutocompleteStream[ ($i) .. ($i+ $len) ]))
+                            $i+= len
+                        }
+
+                    }
+
+                    0x1102 { #PT_MV_BINARY
+                        # Array of PT_BINARY, shouldn't appear in AutocompleteStream
+                    }
+
+                    0x0102 { #PT_BINARY
+                        $len= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                        $i+= 4
+
+                        $PropertyData= $AutocompleteStream[ ($i) .. ($i+ $len)]
+                        $i+= len
+                    }
+
+                    0x0048 { #PT_CLSID
+                        # Guid, shouldn't appear in AutocompleteStream
+                        $i+= 16
+                    }
+
+                    0x0002 { #PT_UNICODE
+                        $len= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                        $i+= 4
+
+                        $PropertyData= [System.Text.Encoding]::Unicode.GetString( $AutocompleteStream[ ($i) .. ($i+ $len) ])
+                        $i+= len
+                    }
+
+                    0x001E { #PT_STRING8
+                        $len= [System.BitConverter]::ToUint32( $AutocompleteStream, $i)
+                        $i+= 4
+
+                        $PropertyData= [System.Text.Encoding]::ASCII.GetString( $AutocompleteStream[ ($i) .. ($i+ $len) ])
+                        $i+= len
+                    }
+
+
+                    0x0002 { #PT_I2 
+                        # No data, data in union
+                        $PropertyData= $null
+                    }
+                    0x0003 { #PT_LONG
+                        # No data, data in union
+                        $PropertyData= $null
+                    }
+                    0x0004 { #PT_R4
+                        # No data, data in union
+                        $PropertyData= $null
+                    }
+                    0x0005 { #PT_DOUBLE
+                        # No data, data in union
+                        $PropertyData= $null
+                    }
+                    0x000B { #PT_BOOLEAN
+                        # No data, data in union
+                        $PropertyData= $null
+                    }
+                    0x0040 { #PT_SYSTIME
+                        # No data, data in union
+                        $PropertyData= $null
+                    }
+                    0x0014 { #PT_I8
+                        # No data, data in union
+                        $PropertyData= $null
+                    }
+                    default {
+                        Write-Error ('Unknown PropertyTag in AutocompleteStream object: {0}' -f $PropertyTag)
+                        Return $null
+                    }
+                }
+
+                Write-Host ('Data: {0}' -f $PropertyData)
+
+            }
+
+        }
     }
 
     Function Clear-AutoCompleteStream( $EwsService, $EmailAddress, $Pattern) {
         Write-Host ('Processing AutoComplete stream for {0}' -f $EmailAddress)
         $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::Inbox, $EmailAddress)  
         $InboxFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, $FolderId)
-        $ItemSearchFilterCollection= New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo( [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass, "IPM.Configuration.AutoComplete")
+
+        # Construct search filter for class & subject
+        $ItemSearchFilterCollection= New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo( [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass, 'IPM.Configuration.Autocomplete')
+
+        # Set the view/properties to return
         $ItemView= New-Object Microsoft.Exchange.WebServices.Data.ItemView( 1)
         $ItemView.PropertySet= New-Object Microsoft.Exchange.WebServices.Data.PropertySet( [Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly)
+        
+        $PR_ROAMING_BINARYSTREAM = [Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition]::New( 0x7c09, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
+        $ItemView.PropertySet.Add( $PR_ROAMING_BINARYSTREAM)   
+
         $ItemView.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::Associated
         $ItemSearchResults= $InboxFolder.FindItems( $ItemSearchFilterCollection, $ItemView)
+
         If( $ItemSearchResults.Items.Count -gt 0) {
             ForEach( $Item in $ItemSearchResults.Items) {
-                If ($pscmdlet.ShouldProcess( 'AutoComplete Stream', 'Clear')) {
-                    $res= $Item.Delete( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
-                    Write-Host 'Cleared AutoComplete stream' -Foreground Green
-                }
+
+#                $AutocompleteStream = $null
+#                $null= $Item.TryGetProperty( $PR_ROAMING_BINARYSTREAM, [ref]$AutocompleteStream)
+#                If( $null -ne $AutocompleteStream) {
+#                    $OriginalStream= ConvertAutocompleteStream-ToObject -AutocompleteStream $AutocompleteStream
+#                }
+#                Else {
+#                    If ($pscmdlet.ShouldProcess( 'AutoComplete Stream', 'Cannot process AutoComplete configuration, just clear')) {
+                    If ($pscmdlet.ShouldProcess( 'AutoComplete Stream', 'Clear')) {
+                        $res= $Item.Delete( [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                        Write-Host 'Cleared AutoComplete stream' -Foreground Green
+                    }
+#                }
             }
         }
         Else {
@@ -226,7 +480,7 @@ process {
         Write-Host ('Processing OWA AutoComplete for {0}' -f $EmailAddress)
         Try { 
             $FolderId= New-Object Microsoft.Exchange.WebServices.Data.FolderId( [Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Root, $EmailAddress)  
-            $UserConfig = [Microsoft.Exchange.WebServices.Data.UserConfiguration]::Bind($EwsService, "OWA.AutocompleteCache", $FolderId, [Microsoft.Exchange.WebServices.Data.UserConfigurationProperties]::All)
+            $UserConfig = [Microsoft.Exchange.WebServices.Data.UserConfiguration]::Bind($EwsService, 'OWA.AutocompleteCache', $FolderId, [Microsoft.Exchange.WebServices.Data.UserConfigurationProperties]::All)
         }
         Catch {
             Write-Host 'No OWA AutoComplete item found'
@@ -385,15 +639,6 @@ process {
             }
         }
     }
-        
-    ##################################################
-    # Main
-    ##################################################
-
-    #Requires -Version 2.0
-
-    Load-EWSManagedAPIDLL
-    set-TrustAllWeb
 
     If( $Pattern) {
         Try {
@@ -410,6 +655,92 @@ process {
         # Not specified, so zap 'em all
     }
 
+    Import-ModuleDLL -Name 'Microsoft.Exchange.WebServices' -FileName 'Microsoft.Exchange.WebServices.dll' -Package 'Exchange.WebServices.Managed.Api' -validateObjName 'Microsoft.Exchange.WebServices.Data.ExchangeVersion'
+    
+    # Load MSAL DLL when OAuth is to be used
+    If($TenantId) {
+        Import-ModuleDLL -Name 'Microsoft.Identity.Client' -FileName 'Microsoft.Identity.Client.dll' -Package 'Microsoft.Identity.Client' -validateObjName 'Microsoft.Identity.Client.TokenCache'
+    }
+
+    $ExchangeVersion= [Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2013_SP1
+    $EwsService= [Microsoft.Exchange.WebServices.Data.ExchangeService]::new( $ExchangeVersion)
+
+    If( $Credentials) {
+        try {
+            Write-Verbose ('Using credentials {0}' -f $Credentials.UserName)
+            $EwsService.Credentials= [System.Net.NetworkCredential]::new( $Credentials.UserName, [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR( $Credentials.Password )))
+        }
+        catch {
+            Write-Error ('Invalid credentials provided: {0}' -f $_.Exception.Message)
+            Exit $ERR_INVALIDCREDENTIALS
+        }
+    }
+    Else {
+        # Use OAuth (and impersonation/X-AnchorMailbox always set)
+        $Impersonation= $true
+
+        If( $CertificateThumbprint -or $CertificateFile) {
+            If( $CertificateFile) {
+                
+                # Use certificate from file using absolute path to authenticate
+                $CertificateFile= (Resolve-Path -Path $CertificateFile).Path
+                
+                Try {
+                    If( $CertificatePassword) {
+                        $X509Certificate2= [System.Security.Cryptography.X509Certificates.X509Certificate2]::new( $CertificateFile, [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR( $CertificatePassword)))
+                    }
+                    Else {
+                        $X509Certificate2= [System.Security.Cryptography.X509Certificates.X509Certificate2]::new( $CertificateFile)
+                    }
+                }
+                Catch {
+                    Write-Error ('Problem importing PFX: {0}' -f $_.Exception.Message)
+                    Exit $ERR_PROBLEMIMPORTINGCERT
+                }
+            }
+            Else {
+                # Use provided certificateThumbprint to retrieve certificate from My store, and authenticate with that
+                $CertStore= [System.Security.Cryptography.X509Certificates.X509Store]::new( [Security.Cryptography.X509Certificates.StoreName]::My, [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+                $CertStore.Open( [System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly )
+                $X509Certificate2= $CertStore.Certificates.Find( [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $CertificateThumbprint, $False) | Select-Object -First 1
+                If(!( $X509Certificate2)) {
+                    Write-Error ('Problem locating certificate in My store: {0}' -f $error[0])
+                    Exit $ERR_CERTNOTFOUND
+                }
+            }
+            Write-Verbose ('Will use certificate {0}, issued by {1} and expiring {2}' -f $X509Certificate2.Thumbprint, $X509Certificate2.Issuer, $X509Certificate2.NotAfter)
+            $App= [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create( $ClientId).WithCertificate( $X509Certificate2).withTenantId( $TenantId).Build()
+               
+        }
+        Else {
+            # Use provided secret to authenticate
+            Write-Verbose ('Will use provided secret to authenticate')
+            $PlainSecret= [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR( $Secret))
+            $App= [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create( $ClientId).WithClientSecret( $PlainSecret).withTenantId( $TenantId).Build()
+        }
+        $Scopes= New-Object System.Collections.Generic.List[string]
+        $Scopes.Add( 'https://outlook.office365.com/.default')
+        Try {
+            $Response=$App.AcquireTokenForClient( $Scopes).executeAsync()
+            $Token= $Response.Result
+            $EwsService.Credentials= [Microsoft.Exchange.WebServices.Data.OAuthCredentials]$Token.AccessToken
+            Write-Verbose ('Authentication token acquired')
+        }
+        Catch {
+            Write-Error ('Problem acquiring token: {0}' -f $error[0])
+            Exit $ERR_INVALIDCREDENTIALS
+        }
+    }
+
+    If( $TrustAll) {
+        Set-SSLVerification -Disable
+    }
+
+}
+
+Process {
+        
+
     ForEach( $ThisIdentity in $Identity) {
 
         $EmailAddress= get-EmailAddress $ThisIdentity
@@ -420,30 +751,13 @@ process {
         }
         Write-Host ('Processing mailbox {0}' -f $EmailAddress)
 
-        $ExchangeVersion= [Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP1
-        $EwsService= New-Object Microsoft.Exchange.WebServices.Data.ExchangeService( $ExchangeVersion)
-        $EwsService.UseDefaultCredentials= $true
-
-        If( $Credentials) {
-            try {
-                Write-Verbose ('Using credentials {0}' -f $Credentials.UserName)
-                $EwsService.Credentials= New-Object System.Net.NetworkCredential( $Credentials.UserName, [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR( $Credentials.Password )))
-            }
-            catch {
-                Write-Error ('Invalid credentials provided {0}' -f $error[0])
-                Exit $ERR_INVALIDCREDENTIALS
-            }
-        }
-        Else {
-            $EwsService.UseDefaultCredentials= $true
-        }
-
         If( $Impersonation) {
             Write-Verbose ('Using {0} for impersonation' -f $EmailAddress)
-            $EwsService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $EmailAddress)
-            $EwsService.HttpHeaders.Add("X-AnchorMailbox", $EmailAddress)
+            $EwsService.ImpersonatedUserId= [Microsoft.Exchange.WebServices.Data.ImpersonatedUserId]::new( [Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $EmailAddress)
+            $EwsService.HttpHeaders.Clear()
+            $EwsService.HttpHeaders.Add( 'X-AnchorMailbox', $EmailAddress)
         }
-        
+            
         If ($Server) {
             $EwsUrl= 'https://{0}/EWS/Exchange.asmx' -f $Server
             Write-Verbose ('Using Exchange Web Services URL {0}' -f $EwsUrl)
@@ -457,35 +771,44 @@ process {
                 $EwsService.autodiscoverUrl( $EmailAddress, {$true})
             }
             catch {
-                Write-Error ('Autodiscover failed: {0}' -f $error[0])
+                Write-Error ('Autodiscover failed: {0}' -f $_.Exception.Message)
                 Exit $ERR_AUTODISCOVERFAILED
             }
             $ErrorActionPreference= 'Continue'
-            Write-Verbose 'Using EWS on CAS {0}' -f $EwsService.Url
+            Write-Verbose 'Using EWS endpoint {0}' -f $EwsService.Url
         } 
-        
+
         try {
             $RootFolder= [Microsoft.Exchange.WebServices.Data.Folder]::Bind( $EwsService, [Microsoft.Exchange.WebServices.Data.WellknownFolderName]::MsgFolderRoot)
         }
         catch {
-            Write-Error ('Can''t access mailbox information store')
+            Write-Error ('Cannot access primary mailbox of {0}: {1}' -f $EmailAddress, $_.Exception.Message)
             Exit $ERR_CANTACCESSMAILBOXSTORE
         }
 
-        If( $Type -contains 'All' -or $Type -contains 'Outlook') {
-            Clear-AutoCompleteStream $EwsService $EmailAddress $Pattern
-        }
+        if( $null -ne $RootFolder) {
 
-        If( $Type -contains 'All' -or $Type -contains 'OWA') {
-            Clear-OWAAutoComplete $EwsService $EmailAddress $Pattern
-        }
+            If( $Type -contains 'All' -or $Type -contains 'Outlook') {
+#                Clear-AutoCompleteStream $EwsService $EmailAddress $Pattern
+                Clear-AutoCompleteStream $EwsService $EmailAddress $Pattern
+            }
 
-        If( $Type -contains 'All' -or $Type -contains 'SuggestedContacts') {
-            Clear-SuggestedContacts $EwsService $EmailAddress $Pattern
-        }
+            If( $Type -contains 'All' -or $Type -contains 'OWA') {
+                Clear-OWAAutoComplete $EwsService $EmailAddress $Pattern
+            }
 
-        If( $Type -contains 'All' -or $Type -contains 'RecipientCache') {
-            Clear-RecipientCache $EwsService $EmailAddress $Pattern
+            If( $Type -contains 'All' -or $Type -contains 'SuggestedContacts') {
+                Clear-SuggestedContacts $EwsService $EmailAddress $Pattern
+            }
+
+            If( $Type -contains 'All' -or $Type -contains 'RecipientCache') {
+                Clear-RecipientCache $EwsService $EmailAddress $Pattern
+            }
         }
+    }
+}
+End {
+    If( $TrustAll) {
+        Set-SSLVerification -Enable
     }
 }
